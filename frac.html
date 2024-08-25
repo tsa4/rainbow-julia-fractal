@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Julia/Mandelbrot Set Explorer</title>
+    <style>
+        body { margin: 0; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #000; }
+        canvas { display: block; width: 90vw; height: 90vh; }
+    </style>
+</head>
+<body>
+    <canvas id="glCanvas"></canvas>
+    <script id="vertexShader" type="x-shader/x-vertex">
+        attribute vec4 aVertexPosition;
+        void main() {
+            gl_Position = aVertexPosition;
+        }
+    </script>
+    <script id="fragmentShader" type="x-shader/x-fragment">
+        precision highp float;
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec2 uJuliaPoint;
+        uniform float uZoom;
+        uniform vec2 uOffset;
+        uniform bool uIsJulia;
+        #define PI 3.14159265359
+        #define ITER 40
+        #define RSQMAX 100.0
+        void main() {
+            vec2 fragCoord = gl_FragCoord.xy;
+            vec2 uv = (fragCoord - 0.5 * uResolution) / uResolution.y;
+            
+            float range = 1.2 / uZoom;
+            vec2 c = uIsJulia ? uJuliaPoint : (uv + uOffset) * (2.0 * range);
+            
+            vec2 z = uIsJulia ? (uv + uOffset) * (2.0 * range) : vec2(0.0, 0.0);
+            float phiKor = 0.0;
+            vec2 dz = vec2(1.0, 0.0);
+            
+            for (int k = 0; k < ITER; k++) {
+                if (dot(z, z) > RSQMAX) break;
+                
+                phiKor += atan(z.y, z.x);
+                
+                dz = 2.0 * vec2(z.x * dz.x - z.y * dz.y, z.x * dz.y + z.y * dz.x);
+                
+                z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+            }
+            
+            float phi = atan(z.y, z.x) - phiKor;
+            phi = 0.5 * phi / PI;
+            phi = (phi - floor(phi)) * 2.0 * PI;
+            
+            vec3 col = vec3(phi / PI * 0.5, 1.0, 1.0);
+            vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+            vec3 p = abs(fract(col.xxx + K.xyz) * 6.0 - K.www);
+            gl_FragColor = vec4(col.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), col.y), 1.0);
+        }
+    </script>
+    <script>
+        let gl, program, positionBuffer, timeLocation, resolutionLocation, juliaPointLocation, zoomLocation, offsetLocation, isJuliaLocation;
+        let startTime, juliaPoint = { x: 0.4, y: 0 };
+        let isPaused = false;
+        let zoom = 1.0;
+        let offset = { x: 0, y: 0 };
+        let lastMousePos = { x: 0, y: 0 };
+        let isJulia = true;
+
+        function initGL() {
+            const canvas = document.getElementById('glCanvas');
+            gl = canvas.getContext('webgl');
+            if (!gl) {
+                alert('Unable to initialize WebGL. Your browser may not support it.');
+                return;
+            }
+            const vertexShader = createShader(gl, gl.VERTEX_SHADER, document.getElementById('vertexShader').text);
+            const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, document.getElementById('fragmentShader').text);
+            program = createProgram(gl, vertexShader, fragmentShader);
+            positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+            timeLocation = gl.getUniformLocation(program, 'uTime');
+            resolutionLocation = gl.getUniformLocation(program, 'uResolution');
+            juliaPointLocation = gl.getUniformLocation(program, 'uJuliaPoint');
+            zoomLocation = gl.getUniformLocation(program, 'uZoom');
+            offsetLocation = gl.getUniformLocation(program, 'uOffset');
+            isJuliaLocation = gl.getUniformLocation(program, 'uIsJulia');
+            startTime = Date.now();
+            window.requestAnimationFrame(render);
+        }
+
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        function createProgram(gl, vertexShader, fragmentShader) {
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Unable to initialize the shader program: ' + gl.getProgramInfoLog(program));
+                return null;
+            }
+            return program;
+        }
+
+        function render() {
+            resizeCanvasToDisplaySize(gl.canvas);
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.useProgram(program);
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            const positionAttributeLocation = gl.getAttribLocation(program, 'aVertexPosition');
+            gl.enableVertexAttribArray(positionAttributeLocation);
+            gl.vertexAttribPointer(positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+            gl.uniform1f(timeLocation, isPaused ? 0 : (Date.now() - startTime) * 0.001);
+            gl.uniform2f(resolutionLocation, gl.canvas.width, gl.canvas.height);
+            gl.uniform2f(juliaPointLocation, juliaPoint.x, juliaPoint.y);
+            gl.uniform1f(zoomLocation, zoom);
+            gl.uniform2f(offsetLocation, offset.x, offset.y);
+            gl.uniform1i(isJuliaLocation, isJulia ? 1 : 0);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            window.requestAnimationFrame(render);
+        }
+
+        function resizeCanvasToDisplaySize(canvas) {
+            const displayWidth = canvas.clientWidth;
+            const displayHeight = canvas.clientHeight;
+            if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+                canvas.width = displayWidth;
+                canvas.height = displayHeight;
+            }
+        }
+
+        function updateJuliaPoint(event) {
+            if (!isPaused && isJulia) {
+                const rect = gl.canvas.getBoundingClientRect();
+                const x = (event.clientX - rect.left) / rect.width;
+                const y = 1 - (event.clientY - rect.top) / rect.height;
+                juliaPoint.x = (x - 0.5) * 2;
+                juliaPoint.y = (y - 0.5) * 2;
+            }
+            lastMousePos.x = event.clientX;
+            lastMousePos.y = event.clientY;
+        }
+
+        function togglePause(event) {
+            isPaused = !isPaused;
+            if (!isPaused) {
+                startTime = Date.now();
+            }
+        }
+
+        function handleZoom(event) {
+            event.preventDefault();
+            const rect = gl.canvas.getBoundingClientRect();
+            const mouseX = 1 -(event.clientX - rect.left) / rect.width * 2 ;
+            const mouseY =  (event.clientY - rect.top) / rect.height * 2 - 1;
+            const zoomFactor = event.deltaY > 0 ? 0.9 : 1.1;
+            const newZoom = Math.max(0.1, Math.min(zoom * zoomFactor, 100000));
+            offset.x += (mouseX - offset.x) * (1 - newZoom / zoom);
+            offset.y += (mouseY - offset.y) * (1 - newZoom / zoom);
+            zoom = newZoom;
+        }
+
+        function toggleSet(event) {
+            if (event.key.toLowerCase() === 'j') {
+                isJulia = !isJulia;
+            }
+        }
+
+        window.onload = function() {
+            initGL();
+            gl.canvas.addEventListener('mousemove', updateJuliaPoint);
+            gl.canvas.addEventListener('click', togglePause);
+            gl.canvas.addEventListener('wheel', handleZoom);
+            gl.canvas.addEventListener('touchmove', function(event) {
+                event.preventDefault();
+                updateJuliaPoint(event.touches[0]);
+            });
+            gl.canvas.addEventListener('touchstart', togglePause);
+            window.addEventListener('keydown', toggleSet);
+        };
+    </script>
+</body>
+</html>
